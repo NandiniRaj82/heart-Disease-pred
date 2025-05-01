@@ -1,58 +1,88 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler as ss
+from sklearn.ensemble import VotingClassifier
 from sklearn.svm import SVC
-from sklearn.metrics import confusion_matrix
-from warnings import simplefilter
+from sklearn.naive_bayes import GaussianNB
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score
+import pandas as pd
 
-simplefilter(action='ignore', category=FutureWarning)
-
+# Load and preprocess
 df = pd.read_csv('cleveland.csv', header=None)
 df.columns = ['age', 'sex', 'cp', 'trestbps', 'chol',
-              'fbs', 'restecg', 'thalach', 'exang','oldpeak', 'slope', 'ca', 'thal', 'target']
-
-
+              'fbs', 'restecg', 'thalach', 'exang', 
+              'oldpeak', 'slope', 'ca', 'thal', 'target']
 df['target'] = df.target.map({0: 0, 1: 1, 2: 1, 3: 1, 4: 1})
-df['sex'] = df.sex.map({0: 'female', 1: 'male'})
-df['thal'] = df.thal.fillna(df.thal.mean())
 df['ca'] = df.ca.fillna(df.ca.mean())
+df['thal'] = df.thal.fillna(df.thal.mean())
+df['sex'] = df.sex.map({0: 'female', 1: 'male'})
+df['sex'] = df['sex'].map({'female': 0, 'male': 1})
+df = pd.get_dummies(df, columns=['thal'], drop_first=True)
 
-sns.set_context("paper", font_scale=2, rc={"font.size": 20, "axes.titlesize": 25, "axes.labelsize": 20}) 
+X = df.drop('target', axis=1)
+y = df['target']
 
-plt.figure(figsize=(20, 8))
-ax = sns.countplot(data=df, x='age', hue='target', order=sorted(df['age'].unique()))
-plt.title('Variation of Age for each target class')
-plt.xticks(rotation=90)
-plt.tight_layout()
-plt.show()
+# Train-test split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-sns.catplot(kind='bar', data=df, y='age', x='sex', hue='target', height=6, aspect=1.5)
-plt.title('Distribution of age vs sex with the target class')
-plt.tight_layout()
-plt.show()
-
-df['sex'] = df.sex.map({'female': 0, 'male': 1})
-
-X = df.iloc[:, :-1].values
-y = df.iloc[:, -1].values
-
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=0)
-
-sc = ss()
+# Scaling
+sc = StandardScaler()
 X_train = sc.fit_transform(X_train)
 X_test = sc.transform(X_test)
+X_scaled = sc.transform(X)  # Full data for prediction
 
-classifier = SVC(kernel='rbf')
-classifier.fit(X_train, y_train)
+# Define base learners
+svm = SVC(kernel='rbf', C=1.0, gamma='scale', probability=True)
+logreg = LogisticRegression(max_iter=1000)
+nb = GaussianNB()
+dt = DecisionTreeClassifier(max_depth=4)
+rf = RandomForestClassifier(n_estimators=50, max_depth=5, random_state=42)
+xgb = XGBClassifier(use_label_encoder=False, eval_metric='logloss', max_depth=3, learning_rate=0.1)
+lgbm = LGBMClassifier(max_depth=3, learning_rate=0.1)
 
-y_pred = classifier.predict(X_test)
-cm_test = confusion_matrix(y_pred, y_test)
+# Voting ensemble
+ensemble = VotingClassifier(
+    estimators=[
+        ('svm', svm),
+        ('logreg', logreg),
+        ('nb', nb),
+        ('rf', rf),
+        ('xgb', xgb),
+        ('lgbm', lgbm)
+    ],
+    voting='soft'
+)
 
-y_pred_train = classifier.predict(X_train)
-cm_train = confusion_matrix(y_pred_train, y_train)
+# Fit model
+ensemble.fit(X_train, y_train)
 
-print()
-print('Accuracy for training set for SVM = {:.2f}%'.format((cm_train[0][0] + cm_train[1][1]) / len(y_train) * 100))
-print('Accuracy for test set for SVM = {:.2f}%'.format((cm_test[0][0] + cm_test[1][1]) / len(y_test) * 100))
+# Predict
+y_train_pred = ensemble.predict(X_train)
+y_test_pred = ensemble.predict(X_test)
+
+# Accuracy
+train_acc = accuracy_score(y_train, y_train_pred) * 100
+test_acc = accuracy_score(y_test, y_test_pred) * 100
+
+print(f"\nImproved Ensemble Accuracy on Training Set: {train_acc:.2f}%")
+print(f"Improved Ensemble Accuracy on Test Set: {test_acc:.2f}%")
+
+# ------------------ NEW PART: Export only heart disease cases ------------------
+
+# Predict on full dataset
+predictions = ensemble.predict(X_scaled)
+
+# Add predictions to original dataframe
+df_with_preds = df.copy()
+df_with_preds['predicted'] = predictions
+
+# Filter only people predicted with heart disease (predicted = 1)
+heart_disease_cases = df_with_preds[df_with_preds['predicted'] == 1]
+
+# Export to CSV
+heart_disease_cases.to_csv('heart_disease_cases.csv', index=False)
+print("\nCSV file 'heart_disease_cases.csv' has been saved with predicted heart disease cases.")
